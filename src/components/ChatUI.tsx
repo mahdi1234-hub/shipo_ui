@@ -10,6 +10,7 @@ import { computeShapValues } from "@/lib/shapAnalysis";
 
 // Dynamic imports for heavy chart components (no SSR)
 const CausalGraph = dynamic(() => import("./CausalGraph"), { ssr: false });
+const CosmographView = dynamic(() => import("./CosmographView"), { ssr: false });
 const ShapCharts = dynamic(() => import("./ShapCharts"), { ssr: false });
 const CorrelationHeatmap = dynamic(() => import("./CorrelationHeatmap"), { ssr: false });
 const StatsSummary = dynamic(() => import("./StatsSummary"), { ssr: false });
@@ -337,6 +338,9 @@ Olivia,36,74000,3400,8,76`);
                     />
                     {msg.analysis.causalGraph.nodes.length > 0 && (
                       <CausalGraph data={msg.analysis.causalGraph} />
+                    )}
+                    {msg.analysis.causalGraph.nodes.length > 0 && (
+                      <CosmographView data={msg.analysis.causalGraph} />
                     )}
                     {msg.analysis.shapValues.features.length > 0 && (
                       <ShapCharts data={msg.analysis.shapValues} />

@@ -255,6 +255,42 @@ export default function CausalGraph({ data }: CausalGraphProps) {
       }
     });
 
+    // Individual node dragging
+    let draggedNode: string | null = null;
+    let isDragging = false;
+
+    sigma.on("downNode", ({ node, event }) => {
+      isDragging = true;
+      draggedNode = node;
+      graph.setNodeAttribute(node, "highlighted", true);
+      // Disable camera movement during drag
+      sigma.getCamera().disable();
+    });
+
+    sigma.getMouseCaptor().on("mousemovebody", (event: { x: number; y: number }) => {
+      if (!isDragging || !draggedNode) return;
+      // Get the mouse position in graph coordinates
+      const pos = sigma.viewportToGraph(event);
+      graph.setNodeAttribute(draggedNode, "x", pos.x);
+      graph.setNodeAttribute(draggedNode, "y", pos.y);
+      // Prevent sigma from moving the camera
+      (event as unknown as { preventSigmaDefault?: () => void }).preventSigmaDefault?.();
+    });
+
+    sigma.getMouseCaptor().on("mouseup", () => {
+      if (draggedNode) {
+        graph.removeNodeAttribute(draggedNode, "highlighted");
+      }
+      isDragging = false;
+      draggedNode = null;
+      sigma.getCamera().enable();
+    });
+
+    // Touch support for dragging
+    sigma.getMouseCaptor().on("mousedown", () => {
+      // Handled by downNode
+    });
+
     sigmaRef.current = sigma;
   }, [data, layout, filteredEdges, getNodeSize, getNodeColor, showLabels, showEdgeLabels, activePanel, pathSource]);
 
