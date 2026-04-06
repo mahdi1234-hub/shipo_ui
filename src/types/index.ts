@@ -36,6 +36,11 @@ export interface CausalGraphData {
   edges: CausalEdge[];
   communities: Record<string, number>;
   metrics: GraphMetrics;
+  shortestPaths: Record<string, Record<string, string[]>>;
+  degreeCentrality: Record<string, number>;
+  betweennessCentrality: Record<string, number>;
+  pageRank: Record<string, number>;
+  closenessCentrality: Record<string, number>;
 }
 
 export interface CausalNode {
@@ -45,6 +50,13 @@ export interface CausalNode {
   color: string;
   community?: number;
   centrality?: number;
+  betweenness?: number;
+  pageRank?: number;
+  closeness?: number;
+  degree?: number;
+  inDegree?: number;
+  outDegree?: number;
+  weightedDegree?: number;
   x?: number;
   y?: number;
 }
@@ -67,6 +79,8 @@ export interface GraphMetrics {
   nodeCount: number;
   edgeCount: number;
   components: number;
+  avgPathLength: number;
+  maxComponentSize: number;
 }
 
 export interface ShapData {

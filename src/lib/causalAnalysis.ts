@@ -14,7 +14,11 @@ const COLORS = {
   positive: "#C48C56",
   negative: "#7B5B3A",
   neutral: "rgba(44, 40, 36, 0.3)",
-  communities: ["#C48C56", "#8B6C4F", "#A67B5B", "#D4A574", "#6B4E37", "#9C7B5C", "#B8956A", "#785A3C"],
+  communities: [
+    "#C48C56", "#8B6C4F", "#A67B5B", "#D4A574",
+    "#6B4E37", "#9C7B5C", "#B8956A", "#785A3C",
+    "#D4956B", "#A0785A", "#BFA88E", "#8C7460",
+  ],
 };
 
 /**
@@ -56,9 +60,8 @@ export function buildCausalGraph(
     processedPairs.add(pairKey);
 
     const absCorr = Math.abs(corr.value);
-    if (absCorr < 0.1) continue; // Filter weak correlations
+    if (absCorr < 0.1) continue;
 
-    // Determine causal direction heuristically via temporal/positional ordering
     const sourceIdx = allCols.indexOf(corr.x);
     const targetIdx = allCols.indexOf(corr.y);
     const source = sourceIdx < targetIdx ? corr.x : corr.y;
@@ -96,7 +99,6 @@ export function buildCausalGraph(
         }
       });
 
-      // Simple ANOVA-like effect size
       const groupMeans = Object.values(groups).map(
         (g) => g.reduce((a, b) => a + b, 0) / g.length
       );
@@ -120,28 +122,73 @@ export function buildCausalGraph(
     }
   }
 
-  // Compute communities using simple label propagation
+  // Compute communities using label propagation
   const communities = computeCommunities(nodes, edges);
   nodes.forEach((node) => {
     node.community = communities[node.id];
     node.color = COLORS.communities[communities[node.id] % COLORS.communities.length];
   });
 
-  // Compute centrality
-  const centrality = computeDegreeCentrality(nodes, edges);
+  // Compute multiple centrality measures
+  const degreeCentrality = computeDegreeCentrality(nodes, edges);
+  const betweennessCentrality = computeBetweennessCentrality(nodes, edges);
+  const pageRank = computePageRank(nodes, edges);
+  const closenessCentrality = computeClosenessCentrality(nodes, edges);
+
   nodes.forEach((node) => {
-    node.centrality = centrality[node.id] || 0;
-    node.size = 8 + (centrality[node.id] || 0) * 20;
+    node.centrality = degreeCentrality[node.id] || 0;
+    node.betweenness = betweennessCentrality[node.id] || 0;
+    node.pageRank = pageRank[node.id] || 0;
+    node.closeness = closenessCentrality[node.id] || 0;
+    node.degree = countDegree(node.id, edges);
+    node.inDegree = countInDegree(node.id, edges);
+    node.outDegree = countOutDegree(node.id, edges);
+    node.weightedDegree = computeWeightedDegree(node.id, edges);
+    node.size = 8 + (degreeCentrality[node.id] || 0) * 20;
   });
 
   // Compute graph metrics
   const metrics = computeGraphMetrics(nodes, edges, communities);
 
-  return { nodes, edges, communities, metrics };
+  // Compute shortest paths for all pairs
+  const shortestPaths = computeAllShortestPaths(nodes, edges);
+
+  return {
+    nodes,
+    edges,
+    communities,
+    metrics,
+    shortestPaths,
+    degreeCentrality,
+    betweennessCentrality,
+    pageRank,
+    closenessCentrality,
+  };
 }
 
 /**
- * Simple label propagation community detection
+ * Count degree (total edges)
+ */
+function countDegree(nodeId: string, edges: CausalEdge[]): number {
+  return edges.filter((e) => e.source === nodeId || e.target === nodeId).length;
+}
+
+function countInDegree(nodeId: string, edges: CausalEdge[]): number {
+  return edges.filter((e) => e.target === nodeId).length;
+}
+
+function countOutDegree(nodeId: string, edges: CausalEdge[]): number {
+  return edges.filter((e) => e.source === nodeId).length;
+}
+
+function computeWeightedDegree(nodeId: string, edges: CausalEdge[]): number {
+  return edges
+    .filter((e) => e.source === nodeId || e.target === nodeId)
+    .reduce((sum, e) => sum + e.weight, 0);
+}
+
+/**
+ * Label propagation community detection
  */
 function computeCommunities(
   nodes: CausalNode[],
@@ -150,7 +197,6 @@ function computeCommunities(
   const labels: Record<string, number> = {};
   nodes.forEach((n, i) => (labels[n.id] = i));
 
-  // Build adjacency
   const adj: Record<string, string[]> = {};
   nodes.forEach((n) => (adj[n.id] = []));
   edges.forEach((e) => {
@@ -158,8 +204,7 @@ function computeCommunities(
     adj[e.target]?.push(e.source);
   });
 
-  // Iterate label propagation
-  for (let iter = 0; iter < 10; iter++) {
+  for (let iter = 0; iter < 15; iter++) {
     let changed = false;
     for (const node of nodes) {
       const neighbors = adj[node.id] || [];
@@ -182,7 +227,6 @@ function computeCommunities(
     if (!changed) break;
   }
 
-  // Normalize community IDs to 0-based sequential
   const uniqueLabels = [...new Set(Object.values(labels))];
   const labelMap: Record<number, number> = {};
   uniqueLabels.forEach((l, i) => (labelMap[l] = i));
@@ -195,7 +239,7 @@ function computeCommunities(
 }
 
 /**
- * Compute degree centrality
+ * Degree centrality
  */
 function computeDegreeCentrality(
   nodes: CausalNode[],
@@ -211,14 +255,247 @@ function computeDegreeCentrality(
 
   const maxDeg = Math.max(...Object.values(degrees), 1);
   for (const key in degrees) {
-    degrees[key] = degrees[key] / maxDeg;
+    degrees[key] = Math.round((degrees[key] / maxDeg) * 1000) / 1000;
   }
 
   return degrees;
 }
 
 /**
- * Compute various graph metrics
+ * Betweenness centrality using Brandes algorithm (simplified)
+ */
+function computeBetweennessCentrality(
+  nodes: CausalNode[],
+  edges: CausalEdge[]
+): Record<string, number> {
+  const adj: Record<string, { target: string; weight: number }[]> = {};
+  nodes.forEach((n) => (adj[n.id] = []));
+  edges.forEach((e) => {
+    adj[e.source]?.push({ target: e.target, weight: e.weight });
+    adj[e.target]?.push({ target: e.source, weight: e.weight });
+  });
+
+  const betweenness: Record<string, number> = {};
+  nodes.forEach((n) => (betweenness[n.id] = 0));
+
+  for (const s of nodes) {
+    const stack: string[] = [];
+    const pred: Record<string, string[]> = {};
+    const sigma: Record<string, number> = {};
+    const dist: Record<string, number> = {};
+    const delta: Record<string, number> = {};
+
+    nodes.forEach((n) => {
+      pred[n.id] = [];
+      sigma[n.id] = 0;
+      dist[n.id] = -1;
+      delta[n.id] = 0;
+    });
+
+    sigma[s.id] = 1;
+    dist[s.id] = 0;
+    const queue: string[] = [s.id];
+
+    while (queue.length > 0) {
+      const v = queue.shift()!;
+      stack.push(v);
+
+      for (const neighbor of adj[v] || []) {
+        const w = neighbor.target;
+        if (dist[w] < 0) {
+          queue.push(w);
+          dist[w] = dist[v] + 1;
+        }
+        if (dist[w] === dist[v] + 1) {
+          sigma[w] += sigma[v];
+          pred[w].push(v);
+        }
+      }
+    }
+
+    while (stack.length > 0) {
+      const w = stack.pop()!;
+      for (const v of pred[w]) {
+        delta[v] += (sigma[v] / sigma[w]) * (1 + delta[w]);
+      }
+      if (w !== s.id) {
+        betweenness[w] += delta[w];
+      }
+    }
+  }
+
+  // Normalize
+  const n = nodes.length;
+  const norm = n > 2 ? 2 / ((n - 1) * (n - 2)) : 1;
+  const maxBet = Math.max(...Object.values(betweenness), 1);
+  for (const key in betweenness) {
+    betweenness[key] = Math.round((betweenness[key] * norm / (maxBet * norm || 1)) * 1000) / 1000;
+  }
+
+  return betweenness;
+}
+
+/**
+ * PageRank algorithm
+ */
+function computePageRank(
+  nodes: CausalNode[],
+  edges: CausalEdge[],
+  damping: number = 0.85,
+  iterations: number = 30
+): Record<string, number> {
+  const n = nodes.length;
+  if (n === 0) return {};
+
+  const rank: Record<string, number> = {};
+  const outDegree: Record<string, number> = {};
+  const adj: Record<string, string[]> = {};
+
+  nodes.forEach((nd) => {
+    rank[nd.id] = 1 / n;
+    outDegree[nd.id] = 0;
+    adj[nd.id] = [];
+  });
+
+  edges.forEach((e) => {
+    outDegree[e.source] = (outDegree[e.source] || 0) + 1;
+    adj[e.target]?.push(e.source);
+  });
+
+  for (let iter = 0; iter < iterations; iter++) {
+    const newRank: Record<string, number> = {};
+    let danglingSum = 0;
+
+    for (const nd of nodes) {
+      if (outDegree[nd.id] === 0) {
+        danglingSum += rank[nd.id];
+      }
+    }
+
+    for (const nd of nodes) {
+      let sum = 0;
+      for (const inNode of adj[nd.id] || []) {
+        sum += rank[inNode] / (outDegree[inNode] || 1);
+      }
+      newRank[nd.id] = (1 - damping) / n + damping * (sum + danglingSum / n);
+    }
+
+    for (const key in rank) {
+      rank[key] = newRank[key];
+    }
+  }
+
+  // Normalize to [0, 1]
+  const maxRank = Math.max(...Object.values(rank), 0.001);
+  for (const key in rank) {
+    rank[key] = Math.round((rank[key] / maxRank) * 1000) / 1000;
+  }
+
+  return rank;
+}
+
+/**
+ * Closeness centrality
+ */
+function computeClosenessCentrality(
+  nodes: CausalNode[],
+  edges: CausalEdge[]
+): Record<string, number> {
+  const adj: Record<string, string[]> = {};
+  nodes.forEach((n) => (adj[n.id] = []));
+  edges.forEach((e) => {
+    adj[e.source]?.push(e.target);
+    adj[e.target]?.push(e.source);
+  });
+
+  const closeness: Record<string, number> = {};
+
+  for (const source of nodes) {
+    const distances: Record<string, number> = {};
+    nodes.forEach((n) => (distances[n.id] = Infinity));
+    distances[source.id] = 0;
+
+    const queue = [source.id];
+    while (queue.length > 0) {
+      const current = queue.shift()!;
+      for (const neighbor of adj[current] || []) {
+        if (distances[neighbor] === Infinity) {
+          distances[neighbor] = distances[current] + 1;
+          queue.push(neighbor);
+        }
+      }
+    }
+
+    const reachable = Object.values(distances).filter((d) => d < Infinity && d > 0);
+    const totalDist = reachable.reduce((a, b) => a + b, 0);
+    closeness[source.id] = reachable.length > 0 ? reachable.length / totalDist : 0;
+  }
+
+  // Normalize
+  const maxClose = Math.max(...Object.values(closeness), 0.001);
+  for (const key in closeness) {
+    closeness[key] = Math.round((closeness[key] / maxClose) * 1000) / 1000;
+  }
+
+  return closeness;
+}
+
+/**
+ * Compute all-pairs shortest paths using BFS
+ */
+function computeAllShortestPaths(
+  nodes: CausalNode[],
+  edges: CausalEdge[]
+): Record<string, Record<string, string[]>> {
+  const adj: Record<string, string[]> = {};
+  nodes.forEach((n) => (adj[n.id] = []));
+  edges.forEach((e) => {
+    adj[e.source]?.push(e.target);
+    adj[e.target]?.push(e.source);
+  });
+
+  const paths: Record<string, Record<string, string[]>> = {};
+
+  for (const source of nodes) {
+    paths[source.id] = {};
+    const prev: Record<string, string | null> = {};
+    const visited = new Set<string>();
+
+    nodes.forEach((n) => (prev[n.id] = null));
+    visited.add(source.id);
+    const queue = [source.id];
+
+    while (queue.length > 0) {
+      const current = queue.shift()!;
+      for (const neighbor of adj[current] || []) {
+        if (!visited.has(neighbor)) {
+          visited.add(neighbor);
+          prev[neighbor] = current;
+          queue.push(neighbor);
+        }
+      }
+    }
+
+    // Reconstruct paths
+    for (const target of nodes) {
+      if (target.id === source.id) continue;
+      const path: string[] = [];
+      let current: string | null = target.id;
+      while (current !== null) {
+        path.unshift(current);
+        current = prev[current];
+      }
+      if (path[0] === source.id) {
+        paths[source.id][target.id] = path;
+      }
+    }
+  }
+
+  return paths;
+}
+
+/**
+ * Compute graph metrics
  */
 function computeGraphMetrics(
   nodes: CausalNode[],
@@ -231,7 +508,7 @@ function computeGraphMetrics(
 
   const uniqueCommunities = new Set(Object.values(communities)).size;
 
-  // Approximate clustering coefficient
+  // Clustering coefficient
   const adj: Record<string, Set<string>> = {};
   nodes.forEach((nd) => (adj[nd.id] = new Set()));
   edges.forEach((e) => {
@@ -260,36 +537,91 @@ function computeGraphMetrics(
 
   const avgClustering = countNodes > 0 ? totalClustering / countNodes : 0;
 
-  // Count connected components via BFS
+  // Connected components
   const visited = new Set<string>();
   let components = 0;
+  let maxComponentSize = 0;
   for (const node of nodes) {
     if (visited.has(node.id)) continue;
     components++;
+    let componentSize = 0;
     const queue = [node.id];
     while (queue.length > 0) {
       const current = queue.shift()!;
       if (visited.has(current)) continue;
       visited.add(current);
+      componentSize++;
       adj[current]?.forEach((nb) => {
         if (!visited.has(nb)) queue.push(nb);
       });
     }
+    maxComponentSize = Math.max(maxComponentSize, componentSize);
   }
+
+  // Diameter (longest shortest path in largest component)
+  let diameter = 0;
+  for (const node of nodes) {
+    const distances: Record<string, number> = {};
+    nodes.forEach((nd) => (distances[nd.id] = Infinity));
+    distances[node.id] = 0;
+    const bfsQueue = [node.id];
+    while (bfsQueue.length > 0) {
+      const current = bfsQueue.shift()!;
+      for (const nb of adj[current] || new Set()) {
+        if (distances[nb] === Infinity) {
+          distances[nb] = distances[current] + 1;
+          bfsQueue.push(nb);
+        }
+      }
+    }
+    const maxDist = Math.max(
+      ...Object.values(distances).filter((d) => d < Infinity)
+    );
+    diameter = Math.max(diameter, maxDist);
+  }
+
+  // Average path length
+  let totalPaths = 0;
+  let totalPathLength = 0;
+  for (const node of nodes) {
+    const distances: Record<string, number> = {};
+    nodes.forEach((nd) => (distances[nd.id] = Infinity));
+    distances[node.id] = 0;
+    const bfsQueue = [node.id];
+    while (bfsQueue.length > 0) {
+      const current = bfsQueue.shift()!;
+      for (const nb of adj[current] || new Set()) {
+        if (distances[nb] === Infinity) {
+          distances[nb] = distances[current] + 1;
+          bfsQueue.push(nb);
+        }
+      }
+    }
+    for (const d of Object.values(distances)) {
+      if (d > 0 && d < Infinity) {
+        totalPaths++;
+        totalPathLength += d;
+      }
+    }
+  }
+
+  const avgPathLength = totalPaths > 0 ? totalPathLength / totalPaths : 0;
 
   return {
     density: Math.round(density * 1000) / 1000,
     modularity: Math.round((uniqueCommunities / Math.max(n, 1)) * 1000) / 1000,
     avgClustering: Math.round(avgClustering * 1000) / 1000,
-    diameter: Math.min(nodes.length - 1, edges.length),
+    diameter,
     nodeCount: nodes.length,
     edgeCount: edges.length,
     components,
+    avgPathLength: Math.round(avgPathLength * 1000) / 1000,
+    maxComponentSize,
   };
 }
 
 /**
- * Perform Granger-like causal direction testing between numeric columns
+ * Granger-like causal direction testing
  */
 export function inferCausalDirections(
   data: ParsedData,
@@ -307,7 +639,6 @@ export function inferCausalDirections(
 
       if (valsA.length < 3 || valsB.length < 3) continue;
 
-      // Lag correlation to determine causal direction
       const n = Math.min(valsA.length, valsB.length);
       const laggedA = valsA.slice(0, n - 1);
       const currentB = valsB.slice(1, n);
